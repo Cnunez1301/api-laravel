@@ -1,0 +1,90 @@
+name: Laravel CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  # Stage 1: Test
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, sqlite, pdo, pdo_sqlite, bcmath
+          coverage: none
+
+      - name: Install Composer dependencies
+        run: composer install --no-progress --no-suggest --prefer-dist
+
+      - name: Run PHPUnit tests
+        run: vendor/bin/phpunit --colors=always
+
+  # Stage 2: Static Analysis
+  scan:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+
+      - name: Install Composer dependencies
+        run: composer install --no-progress --no-suggest --prefer-dist
+
+      - name: Run PHPStan
+        run: vendor/bin/phpstan analyse
+
+  # Stage 3: Build Docker image
+  build:
+    runs-on: ubuntu-latest
+    needs: scan
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Docker image
+        run: docker build -t ghcr.io/${{ github.repository }}/laravel-api:latest .
+
+      - name: Push Docker image
+        run: docker push ghcr.io/${{ github.repository }}/laravel-api:latest
+
+  # Stage 4: Deploy via SSH (Ansible)
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Setup Ansible
+        run: sudo apt-get update && sudo apt-get install -y ansible sshpass
+
+      - name: Deploy using Ansible
+        env:
+          ANSIBLE_HOST: ${{ secrets.ANSIBLE_HOST }}
+          ANSIBLE_USER: ${{ secrets.ANSIBLE_USER }}
+          ANSIBLE_KEY: ${{ secrets.ANSIBLE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$ANSIBLE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ansible-playbook -i "$ANSIBLE_HOST," ansible/playbook.yml -u "$ANSIBLE_USER" --private-key ~/.ssh/id_rsa
+
